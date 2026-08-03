@@ -9,11 +9,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout kernel cyberc3dr lineage-21
+      - name: Checkout kernel filiprrs lineage-20 (kernel for LOS21)
         uses: actions/checkout@v7
         with:
-          repository: cyberc3dr/android_kernel_samsung_universal7880
-          ref: lineage-21
+          repository: filiprrs/android_kernel_samsung_universal7880
+          ref: lineage-20
           fetch-depth: 1
 
       - name: Checkout zipper (AnyKernel3)
@@ -87,7 +87,7 @@ jobs:
             || true
 
           ls drivers/kernelsu | head -15
-          echo "==> Done LOS21 KernelSU"
+          echo "==> Done LOS21 (filiprrs lineage-20 tree)"
 
       - name: Build Android Kernel for a7y17lte
         uses: cyberc3dr/android-kernel-actions@a57y17lte
