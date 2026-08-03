@@ -1,0 +1,107 @@
+name: Build a7y17lte KernelSU (cyberc3dr A14 / LOS21)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: a7y17lte cyber A14 + KernelSU
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout kernel cyberc3dr lineage-21
+        uses: actions/checkout@v7
+        with:
+          repository: cyberc3dr/android_kernel_samsung_universal7880
+          ref: lineage-21
+          fetch-depth: 1
+
+      - name: Checkout zipper (AnyKernel3)
+        uses: actions/checkout@v7
+        with:
+          repository: cyberc3dr/AnyKernel3
+          path: zipper
+
+      - name: Add backslashxx KernelSU + defconfig
+        run: |
+          set -e
+          DEFCONFIG="arch/arm64/configs/lineage-a7y17lte_defconfig"
+
+          if [ ! -f "$DEFCONFIG" ]; then
+            echo "ERROR: $DEFCONFIG tidak ada"
+            ls arch/arm64/configs/ | head -50
+            exit 1
+          fi
+          echo "Using DEFCONFIG=$DEFCONFIG"
+
+          echo "==> Clone backslashxx KernelSU..."
+          git clone --depth=1 https://github.com/backslashxx/KernelSU.git ksu_temp
+
+          if [ -d "ksu_temp/kernel" ]; then
+            rm -rf drivers/kernelsu
+            cp -r ksu_temp/kernel drivers/kernelsu
+          else
+            rm -rf drivers/kernelsu
+            mkdir -p drivers/kernelsu
+            cp -r ksu_temp/* drivers/kernelsu/
+          fi
+          rm -rf ksu_temp
+
+          if ! grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig; then
+            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          fi
+          if ! grep -q 'kernelsu/' drivers/Makefile; then
+            echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          fi
+
+          sed -i '/CONFIG_KSU/d' "$DEFCONFIG" || true
+          sed -i '/CONFIG_KSU_TAMPER_SYSCALL_TABLE/d' "$DEFCONFIG" || true
+          echo 'CONFIG_KSU=y' >> "$DEFCONFIG"
+          echo 'CONFIG_KSU_TAMPER_SYSCALL_TABLE=y' >> "$DEFCONFIG"
+          grep CONFIG_KSU "$DEFCONFIG" || true
+
+          find drivers/kernelsu -type f \( -name 'Makefile' -o -name 'Kbuild' -o -name '*.mk' \) | while read -r f; do
+            sed -i -E 's/(^|[[:space:]])-Werror=[^[:space:]]+//g' "$f" || true
+            sed -i -E 's/(^|[[:space:]])-Werror($|[[:space:]])/\1\2/g' "$f" || true
+            echo 'ccflags-y += -Wno-error' >> "$f"
+            echo 'subdir-ccflags-y += -Wno-error' >> "$f"
+          done
+
+          find drivers/kernelsu -type f \( -name 'Makefile' -o -name 'Kbuild' -o -name '*.mk' -o -name '*.c' -o -name '*.h' \) | while read -r f; do
+            sed -i \
+              -e 's/-Wno-discarded-qualifiers//g' \
+              -e 's/-Wno-incompatible-pointer-types-discards-qualifiers//g' \
+              -e 's/-Wno-macro-redefined//g' \
+              -e 's/-Wno-int-conversion//g' \
+              "$f" || true
+          done
+
+          find drivers/kernelsu -type f \( -name 'Makefile' -o -name 'Kbuild' -o -name '*.mk' \) | while read -r f; do
+            sed -i -E 's/(^|[[:space:]])-implicit-function-declaration($|[[:space:]])/\1\2/g' "$f" || true
+          done
+
+          find drivers/kernelsu -type f \( -name '*.c' -o -name '*.h' \) -print0 | xargs -0 sed -i \
+            -e 's/static uintptr_t selinux_ops_addr = NULL;/static uintptr_t selinux_ops_addr = 0;/g' \
+            -e 's/uintptr_t selinux_ops_addr = NULL;/uintptr_t selinux_ops_addr = 0;/g' \
+            -e 's/ksu_sulog_emit(\([^,]*\), NULL, NULL,/ksu_sulog_emit(\1, NULL, 0,/g' \
+            -e 's/copy_to_iter(KERNEL_SU_RC/copy_to_iter((void *)KERNEL_SU_RC/g' \
+            || true
+
+          ls drivers/kernelsu | head -15
+          echo "==> Done cyberc3dr A14 (lineage-21)"
+
+      - name: Build Android Kernel for a7y17lte
+        uses: cyberc3dr/android-kernel-actions@a57y17lte
+        env:
+          NAME: a7y17lte-ksu-cyber-a14
+        with:
+          arch: arm64
+          defconfig: lineage-a7y17lte_defconfig
+          image: Image
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: a7y17lte-ksu-cyber-a14
+          path: zipper/*.zip
+          if-no-files-found: error
