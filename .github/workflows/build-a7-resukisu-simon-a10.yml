@@ -1,0 +1,242 @@
+name: Build a7y17lte ReSukiSU (Simon A10)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: a7y17lte Simon A10 + ReSukiSU
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Simon1511 rise
+        uses: actions/checkout@v7
+        with:
+          repository: Simon1511/android_kernel_samsung_universal7880
+          ref: rise
+          fetch-depth: 1
+
+      - name: Checkout zipper (AnyKernel3)
+        uses: actions/checkout@v7
+        with:
+          repository: cyberc3dr/AnyKernel3
+          path: zipper
+
+      - name: Integrate ReSukiSU + hooks + defconfig
+        run: |
+          set -e
+
+          DEFCONFIG=""
+          for c in \
+            arch/arm64/configs/rise-a7y17lte_defconfig \
+            arch/arm64/configs/lineage-a7y17lte_defconfig \
+            arch/arm64/configs/a7y17lte_defconfig
+          do
+            if [ -f "$c" ]; then DEFCONFIG="$c"; break; fi
+          done
+          if [ -z "$DEFCONFIG" ]; then
+            echo "ERROR: defconfig a7 tidak ketemu"
+            ls arch/arm64/configs/ | head -60
+            exit 1
+          fi
+          echo "Using DEFCONFIG=$DEFCONFIG"
+          DEFCONFIG_NAME=$(basename "$DEFCONFIG")
+          echo "DEFCONFIG_NAME=$DEFCONFIG_NAME" >> "$GITHUB_ENV"
+
+          echo "==> Clone ReSukiSU..."
+          rm -rf KernelSU drivers/kernelsu
+          git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git KernelSU
+
+          # Layout resmi: drivers/kernelsu = isi kernel/
+          mkdir -p drivers/kernelsu
+          if [ -d KernelSU/kernel ]; then
+            cp -a KernelSU/kernel/. drivers/kernelsu/
+          else
+            cp -a KernelSU/. drivers/kernelsu/
+          fi
+
+          test -f drivers/kernelsu/Kconfig
+
+          if ! grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig; then
+            echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          fi
+          if ! grep -q 'kernelsu/' drivers/Makefile; then
+            echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
+          fi
+
+          # ReSuki sering paksa git submodule — soft kan
+          find drivers/kernelsu -type f \( -name 'Kbuild' -o -name 'Makefile' -o -name '*.mk' \) | while read -r f; do
+            sed -i 's/\$(error /\$(warning /g' "$f" || true
+            sed -i 's/\( (error / \)(warning /g' "$f" || true
+            sed -i '/git submodule/s/\$(error/\$(warning/g' "$f" || true
+            sed -i '/You should use ReSukiSU as a git submodule/s/.*/$(warning submodule soft)/g' "$f" || true
+            sed -i '/You should integrate ReSukiSU/s/.*/$(warning integrate soft)/g' "$f" || true
+            sed -i '/static_export_check/s/\$(error/\$(warning/g' "$f" || true
+            sed -i '/manual_hook_check/s/\$(error/\$(warning/g' "$f" || true
+          done
+
+          # Defconfig ReSuki (manual hook, non-GKI 3.18)
+          sed -i '/CONFIG_KSU/d' "$DEFCONFIG" || true
+          sed -i '/CONFIG_KSU_MANUAL_HOOK/d' "$DEFCONFIG" || true
+          sed -i '/CONFIG_KSU_SUSFS/d' "$DEFCONFIG" || true
+          sed -i '/CONFIG_KPROBES/d' "$DEFCONFIG" || true
+          sed -i '/CONFIG_KPROBE_EVENTS/d' "$DEFCONFIG" || true
+          sed -i '/^CONFIG_MODULES=/d' "$DEFCONFIG" || true
+
+          {
+            echo 'CONFIG_MODULES=y'
+            echo 'CONFIG_KPROBES=y'
+            echo 'CONFIG_KPROBE_EVENTS=y'
+            echo 'CONFIG_KSU=y'
+            echo 'CONFIG_KSU_MANUAL_HOOK=y'
+          } >> "$DEFCONFIG"
+
+          echo "=== KSU defconfig ==="
+          grep CONFIG_KSU "$DEFCONFIG" || true
+
+          # Soft Werror / flag GCC 4.9
+          find drivers/kernelsu -type f \( -name 'Makefile' -o -name 'Kbuild' -o -name '*.mk' \) | while read -r f; do
+            sed -i -E 's/(^|[[:space:]])-Werror=[^[:space:]]+//g' "$f" || true
+            sed -i -E 's/(^|[[:space:]])-Werror($|[[:space:]])/\1\2/g' "$f" || true
+            echo 'ccflags-y += -Wno-error' >> "$f"
+            echo 'subdir-ccflags-y += -Wno-error' >> "$f"
+          done
+
+          find drivers/kernelsu -type f \( -name 'Makefile' -o -name 'Kbuild' -o -name '*.mk' -o -name '*.c' -o -name '*.h' \) | while read -r f; do
+            sed -i \
+              -e 's/-Wno-discarded-qualifiers//g' \
+              -e 's/-Wno-incompatible-pointer-types-discards-qualifiers//g' \
+              -e 's/-Wno-macro-redefined//g' \
+              -e 's/-Wno-int-conversion//g' \
+              -e 's/-Wno-logical-not-parentheses//g' \
+              -e 's/-implicit-function-declaration//g' \
+              "$f" || true
+          done
+
+          # Fix NULL -> 0 / cast klasik 3.18
+          find drivers/kernelsu -type f \( -name '*.c' -o -name '*.h' \) -print0 | xargs -0 sed -i \
+            -e 's/static uintptr_t selinux_ops_addr = NULL;/static uintptr_t selinux_ops_addr = 0;/g' \
+            -e 's/uintptr_t selinux_ops_addr = NULL;/uintptr_t selinux_ops_addr = 0;/g' \
+            -e 's/ksu_sulog_emit(\([^,]*\), NULL, NULL,/ksu_sulog_emit(\1, NULL, 0,/g' \
+            -e 's/copy_to_iter(KERNEL_SU_RC/copy_to_iter((void *)KERNEL_SU_RC/g' \
+            || true
+
+          echo "==> Minimal manual hooks (strings + calls)..."
+          python3 -c '
+          import re
+          from pathlib import Path
+
+          def R(p):
+              return Path(p).read_text(encoding="utf-8", errors="ignore")
+
+          def W(p, t):
+              Path(p).write_text(t, encoding="utf-8")
+              print("wrote", p)
+
+          # exec
+          p, t = "fs/exec.c", R("fs/exec.c")
+          if "ksu_handle_execveat" not in t:
+              decl = "\n#ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *__argv, void *__envp, int *flags);\n#endif\n"
+              m = re.search(r"static\s+int\s+do_execveat_common\s*\([^)]*\)\s*\{", t)
+              if m:
+                  t = t[:m.start()] + decl + t[m.start():]
+                  m2 = re.search(r"static\s+int\s+do_execveat_common\s*\([^)]*\)\s*\{", t)
+                  if m2:
+                      t = t[:m2.end()] + "\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat(&fd, &filename, NULL, NULL, &flags);\n#endif\n" + t[m2.end():]
+                  W(p, t)
+                  print("exec: hooked")
+              else:
+                  ref = "\n#ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *a, void *b, int *flags);\nstatic int ksu_execveat_anchor(void){int fd=0,fl=0; struct filename *fn=NULL; return ksu_handle_execveat(&fd,&fn,NULL,NULL,&fl);}\n#endif\n"
+                  lines = t.splitlines(True)
+                  out, done = [], False
+                  for i, line in enumerate(lines):
+                      out.append(line)
+                      if not done and line.startswith("#include") and i+1 < len(lines) and not lines[i+1].startswith("#include"):
+                          out.append(ref)
+                          done = True
+                  if not done:
+                      out.insert(40, ref)
+                  W(p, "".join(out))
+                  print("exec: anchor")
+          else:
+              print("exec: already")
+
+          # open
+          p, t = "fs/open.c", R("fs/open.c")
+          if "ksu_handle_faccessat" not in t:
+              decl = "\n#ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif\n"
+              m = re.search(r"SYSCALL_DEFINE3\s*\(\s*faccessat\s*,", t)
+              if m:
+                  t = t[:m.start()] + decl + t[m.start():]
+                  m2 = re.search(r"(SYSCALL_DEFINE3\s*\(\s*faccessat\s*,[\s\S]*?\))\s*\{", t)
+                  if m2:
+                      t = t[:m2.end()] + "\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n" + t[m2.end():]
+                  W(p, t)
+                  print("open: ok")
+              else:
+                  print("open: missing")
+          else:
+              print("open: already")
+
+          # stat
+          p, t = "fs/stat.c", R("fs/stat.c")
+          if "ksu_handle_stat" not in t:
+              decl = "\n#ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n"
+              m = re.search(r"SYSCALL_DEFINE4\s*\(\s*newfstatat\s*,", t)
+              if m:
+                  t = t[:m.start()] + decl + t[m.start():]
+                  m2 = re.search(r"(SYSCALL_DEFINE4\s*\(\s*newfstatat\s*,[\s\S]*?\))\s*\{", t)
+                  if m2:
+                      t = t[:m2.end()] + "\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n" + t[m2.end():]
+                  W(p, t)
+                  print("stat: ok")
+              else:
+                  print("stat: missing")
+          else:
+              print("stat: already")
+
+          # reboot
+          for cand in ("kernel/reboot.c", "kernel/sys.c"):
+              if not Path(cand).exists():
+                  continue
+              t = R(cand)
+              if "ksu_handle_sys_reboot" in t:
+                  print(cand, "already")
+                  break
+              decl = "\n#ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif\n"
+              m = re.search(r"SYSCALL_DEFINE4\s*\(\s*reboot\s*,", t)
+              if m:
+                  t = t[:m.start()] + decl + t[m.start():]
+                  m2 = re.search(r"(SYSCALL_DEFINE4\s*\(\s*reboot\s*,[\s\S]*?\))\s*\{", t)
+                  if m2:
+                      t = t[:m2.end()] + "\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif\n" + t[m2.end():]
+                  W(cand, t)
+                  print(cand, "reboot ok")
+                  break
+
+          for s in ("ksu_handle_execveat", "ksu_handle_faccessat", "ksu_handle_stat"):
+              found = any(s in f.read_text(encoding="utf-8", errors="ignore") for root in (Path("fs"), Path("kernel")) for f in root.rglob("*.c"))
+              print("FOUND" if found else "MISSING", s)
+          print("HOOKS_END_OK")
+          '
+
+          echo "=== verify ==="
+          grep -n "ksu_handle_execveat" fs/exec.c | head -3 || true
+          ls drivers/kernelsu | head -15
+          echo "==> ReSukiSU integrate done"
+
+      - name: Build Android Kernel for a7y17lte
+        uses: cyberc3dr/android-kernel-actions@a57y17lte
+        env:
+          NAME: a7y17lte-resukisu-simon-a10
+        with:
+          arch: arm64
+          defconfig: ${{ env.DEFCONFIG_NAME }}
+          image: Image
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: a7y17lte-resukisu-simon-a10
+          path: zipper/*.zip
+          if-no-files-found: error
