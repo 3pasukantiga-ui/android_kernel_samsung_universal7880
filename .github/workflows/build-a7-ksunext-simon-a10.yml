@@ -71,16 +71,13 @@ jobs:
             echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           fi
 
-          # ── Soften ALL hard stop di Kbuild (hooks check) ──
           find drivers/kernelsu -type f \( -name 'Kbuild' -o -name 'Makefile' -o -name '*.mk' \) | while read -r f; do
             sed -i 's/\$(error /\$(warning /g' "$f" || true
             sed -i 's/\( (error / \)(warning /g' "$f" || true
-            # matikan stop khusus hooks
             sed -i '/No hooks were defined/s/.*/$(warning KernelSU-Next hooks check soft)/g' "$f" || true
             sed -i '/please integrate manual hooks/s/.*/$(warning manual hooks soft)/g' "$f" || true
           done
 
-          # Defconfig
           sed -i '/CONFIG_KSU/d' "$DEFCONFIG" || true
           sed -i '/CONFIG_KPROBES/d' "$DEFCONFIG" || true
           sed -i '/CONFIG_KPROBE_EVENTS/d' "$DEFCONFIG" || true
@@ -99,13 +96,13 @@ jobs:
             echo '# CONFIG_KSU_KPROBE_HOOKS is not set'
           } >> "$DEFCONFIG"
 
-          # Werror soft (GCC 4.9)
           find drivers/kernelsu -type f \( -name 'Makefile' -o -name 'Kbuild' -o -name '*.mk' \) | while read -r f; do
             sed -i -E 's/(^|[[:space:]])-Werror=[^[:space:]]+//g' "$f" || true
             sed -i -E 's/(^|[[:space:]])-Werror($|[[:space:]])/\1\2/g' "$f" || true
             echo 'ccflags-y += -Wno-error' >> "$f"
             echo 'subdir-ccflags-y += -Wno-error' >> "$f"
           done
+
           find drivers/kernelsu -type f \( -name 'Makefile' -o -name 'Kbuild' -o -name '*.mk' -o -name '*.c' -o -name '*.h' \) | while read -r f; do
             sed -i \
               -e 's/-Wno-discarded-qualifiers//g' \
@@ -134,18 +131,15 @@ jobs:
               Path(p).write_text(t, encoding="utf-8")
               print("wrote", p)
 
-          # ─── fs/exec.c : ksu_handle_execveat ───
           p = "fs/exec.c"
           t = R(p)
           if "ksu_handle_execveat" not in t:
               decl = """
 #ifdef CONFIG_KSU
-__attribute__((hot))
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
 			void *__argv, void *__envp, int *flags);
 #endif
 """
-              # inject before do_execveat_common if exists
               m = re.search(r"(static\s+int\s+do_execveat_common\s*\([^)]*\)\s*\{)", t)
               if m:
                   t = t[: m.start()] + decl + "\n" + t[m.start() :]
@@ -161,11 +155,10 @@ extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
                   W(p, t)
                   print("exec: do_execveat_common hooked")
               else:
-                  # fallback: symbol reference so checker finds string
                   ref = """
 #ifdef CONFIG_KSU
 extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *a, void *b, int *flags);
-static int __maybe_unused ksu_execveat_anchor(void)
+static int ksu_execveat_anchor(void)
 {
 	int fd = 0, fl = 0;
 	struct filename *fn = NULL;
@@ -173,12 +166,13 @@ static int __maybe_unused ksu_execveat_anchor(void)
 }
 #endif
 """
-                  # after first block of includes
                   lines = t.splitlines(True)
                   out, done = [], False
                   for i, line in enumerate(lines):
                       out.append(line)
-                      if not done and line.startswith("#include") and i + 1 < len(lines) and not lines[i + 1].startswith("#include"):
+                      if (not done and line.startswith("#include")
+                              and i + 1 < len(lines)
+                              and not lines[i + 1].startswith("#include")):
                           out.append(ref)
                           done = True
                   if not done:
@@ -188,7 +182,6 @@ static int __maybe_unused ksu_execveat_anchor(void)
           else:
               print("exec: already has ksu_handle_execveat")
 
-          # ─── fs/open.c : faccessat ───
           p = "fs/open.c"
           t = R(p)
           if "ksu_handle_faccessat" not in t:
@@ -218,13 +211,11 @@ extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int
           else:
               print("open: already hooked")
 
-          # ─── fs/stat.c : newfstatat / ksu_handle_stat ───
           p = "fs/stat.c"
           t = R(p)
           if "ksu_handle_stat" not in t:
               decl = """
 #ifdef CONFIG_KSU
-__attribute__((hot))
 extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
 #endif
 """
@@ -245,15 +236,12 @@ extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *fla
                   W(p, t)
                   print("stat: newfstatat ok")
               else:
-                  # try fstatat64 naming on older trees
-                  print("stat: newfstatat pattern missing, try generic")
+                  print("stat: newfstatat pattern missing")
                   if "SYSCALL_DEFINE" in t:
-                      t = decl + "\n" + t
-                      W(p, t)
+                      W(p, decl + "\n" + t)
           else:
               print("stat: already hooked")
 
-          # ─── reboot ───
           for cand in ("kernel/reboot.c", "kernel/sys.c"):
               p = cand
               if not Path(p).exists():
@@ -285,7 +273,6 @@ extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void 
                   print(p, "reboot ok")
                   break
 
-          # Verify strings for Kbuild grep-style checks
           for s in ("ksu_handle_execveat", "ksu_handle_faccessat", "ksu_handle_stat"):
               found = False
               for root in (Path("fs"), Path("kernel")):
