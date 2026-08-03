@@ -119,8 +119,8 @@ jobs:
             ln -sfn ../uapi drivers/kernelsu/include/uapi
           fi
 
-          echo "==> Apply manual hooks (3.18)..."
-          python3 << 'PY'
+          echo "==> Apply manual hooks via helper script..."
+          cat > /tmp/ksu_hooks.py << 'ENDPY'
           import re
           from pathlib import Path
 
@@ -131,48 +131,27 @@ jobs:
               Path(p).write_text(t, encoding="utf-8")
               print("wrote", p)
 
+          # --- exec ---
           p = "fs/exec.c"
           t = R(p)
           if "ksu_handle_execveat" not in t:
-              decl = """
-#ifdef CONFIG_KSU
-extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
-			void *__argv, void *__envp, int *flags);
-#endif
-"""
+              decl = "\n#ifdef CONFIG_KSU\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *__argv, void *__envp, int *flags);\n#endif\n"
               m = re.search(r"(static\s+int\s+do_execveat_common\s*\([^)]*\)\s*\{)", t)
               if m:
-                  t = t[: m.start()] + decl + "\n" + t[m.start() :]
+                  t = t[:m.start()] + decl + t[m.start():]
                   m2 = re.search(r"static\s+int\s+do_execveat_common\s*\([^)]*\)\s*\{", t)
                   if m2:
-                      pos = m2.end()
-                      call = """
-#ifdef CONFIG_KSU
-	ksu_handle_execveat(&fd, &filename, NULL, NULL, &flags);
-#endif
-"""
-                      t = t[:pos] + call + t[pos:]
+                      call = "\n#ifdef CONFIG_KSU\n\tksu_handle_execveat(&fd, &filename, NULL, NULL, &flags);\n#endif\n"
+                      t = t[:m2.end()] + call + t[m2.end():]
                   W(p, t)
-                  print("exec: do_execveat_common hooked")
+                  print("exec: hooked do_execveat_common")
               else:
-                  ref = """
-#ifdef CONFIG_KSU
-extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *a, void *b, int *flags);
-static int ksu_execveat_anchor(void)
-{
-	int fd = 0, fl = 0;
-	struct filename *fn = NULL;
-	return ksu_handle_execveat(&fd, &fn, NULL, NULL, &fl);
-}
-#endif
-"""
+                  ref = "\n#ifdef CONFIG_KSU\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *a, void *b, int *flags);\nstatic int ksu_execveat_anchor(void){ int fd=0,fl=0; struct filename *fn=NULL; return ksu_handle_execveat(&fd,&fn,NULL,NULL,&fl); }\n#endif\n"
                   lines = t.splitlines(True)
                   out, done = [], False
                   for i, line in enumerate(lines):
                       out.append(line)
-                      if (not done and line.startswith("#include")
-                              and i + 1 < len(lines)
-                              and not lines[i + 1].startswith("#include")):
+                      if not done and line.startswith("#include") and i + 1 < len(lines) and not lines[i+1].startswith("#include"):
                           out.append(ref)
                           done = True
                   if not done:
@@ -180,115 +159,78 @@ static int ksu_execveat_anchor(void)
                   W(p, "".join(out))
                   print("exec: anchor injected")
           else:
-              print("exec: already has ksu_handle_execveat")
+              print("exec: already present")
 
+          # --- open / faccessat ---
           p = "fs/open.c"
           t = R(p)
           if "ksu_handle_faccessat" not in t:
-              decl = """
-#ifdef CONFIG_KSU
-extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);
-#endif
-"""
+              decl = "\n#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif\n"
               m = re.search(r"SYSCALL_DEFINE3\s*\(\s*faccessat\s*,", t)
               if m:
-                  t = t[: m.start()] + decl + "\n" + t[m.start() :]
+                  t = t[:m.start()] + decl + t[m.start():]
                   m2 = re.search(r"(SYSCALL_DEFINE3\s*\(\s*faccessat\s*,[\s\S]*?\))\s*\{", t)
                   if m2:
-                      t = (
-                          t[: m2.end()]
-                          + """
-#ifdef CONFIG_KSU
-	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
-#endif
-"""
-                          + t[m2.end() :]
-                      )
+                      call = "\n#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n"
+                      t = t[:m2.end()] + call + t[m2.end():]
                   W(p, t)
                   print("open: faccessat ok")
               else:
-                  print("open: faccessat pattern missing")
+                  print("open: pattern missing")
           else:
-              print("open: already hooked")
+              print("open: already present")
 
+          # --- stat ---
           p = "fs/stat.c"
           t = R(p)
           if "ksu_handle_stat" not in t:
-              decl = """
-#ifdef CONFIG_KSU
-extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
-#endif
-"""
+              decl = "\n#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n"
               m = re.search(r"SYSCALL_DEFINE4\s*\(\s*newfstatat\s*,", t)
               if m:
-                  t = t[: m.start()] + decl + "\n" + t[m.start() :]
+                  t = t[:m.start()] + decl + t[m.start():]
                   m2 = re.search(r"(SYSCALL_DEFINE4\s*\(\s*newfstatat\s*,[\s\S]*?\))\s*\{", t)
                   if m2:
-                      t = (
-                          t[: m2.end()]
-                          + """
-#ifdef CONFIG_KSU
-	ksu_handle_stat(&dfd, &filename, &flag);
-#endif
-"""
-                          + t[m2.end() :]
-                      )
+                      call = "\n#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n"
+                      t = t[:m2.end()] + call + t[m2.end():]
                   W(p, t)
                   print("stat: newfstatat ok")
               else:
-                  print("stat: newfstatat pattern missing")
-                  if "SYSCALL_DEFINE" in t:
-                      W(p, decl + "\n" + t)
+                  print("stat: pattern missing")
+                  W(p, decl + t)
           else:
-              print("stat: already hooked")
+              print("stat: already present")
 
+          # --- reboot ---
           for cand in ("kernel/reboot.c", "kernel/sys.c"):
-              p = cand
-              if not Path(p).exists():
+              if not Path(cand).exists():
                   continue
-              t = R(p)
+              t = R(cand)
               if "ksu_handle_sys_reboot" in t:
-                  print(p, "already reboot hook")
+                  print(cand, "already reboot")
                   break
-              decl = """
-#ifdef CONFIG_KSU
-extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
-#endif
-"""
+              decl = "\n#ifdef CONFIG_KSU\nextern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n#endif\n"
               m = re.search(r"SYSCALL_DEFINE4\s*\(\s*reboot\s*,", t)
               if m:
-                  t = t[: m.start()] + decl + "\n" + t[m.start() :]
+                  t = t[:m.start()] + decl + t[m.start():]
                   m2 = re.search(r"(SYSCALL_DEFINE4\s*\(\s*reboot\s*,[\s\S]*?\))\s*\{", t)
                   if m2:
-                      t = (
-                          t[: m2.end()]
-                          + """
-#ifdef CONFIG_KSU
-	ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
-#endif
-"""
-                          + t[m2.end() :]
-                      )
-                  W(p, t)
-                  print(p, "reboot ok")
+                      call = "\n#ifdef CONFIG_KSU\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif\n"
+                      t = t[:m2.end()] + call + t[m2.end():]
+                  W(cand, t)
+                  print(cand, "reboot ok")
                   break
 
           for s in ("ksu_handle_execveat", "ksu_handle_faccessat", "ksu_handle_stat"):
-              found = False
-              for root in (Path("fs"), Path("kernel")):
-                  for f in root.rglob("*.c"):
-                      if s in f.read_text(encoding="utf-8", errors="ignore"):
-                          found = True
-                          print("FOUND", s, "in", f)
-                          break
-                  if found:
-                      break
-              if not found:
-                  print("MISSING", s)
+              found = any(s in f.read_text(encoding="utf-8", errors="ignore") for root in (Path("fs"), Path("kernel")) for f in root.rglob("*.c"))
+              print("FOUND" if found else "MISSING", s)
           print("HOOKS_END_OK")
-          PY
+          ENDPY
 
-          echo "=== verify hooks ==="
+          # hapus leading spaces dari heredoc (YAML indent)
+          sed -i 's/^          //' /tmp/ksu_hooks.py
+          python3 /tmp/ksu_hooks.py
+
+          echo "=== verify ==="
           grep -n "ksu_handle_execveat" fs/exec.c | head -5 || true
           grep -n "ksu_handle_faccessat" fs/open.c | head -5 || true
           grep -n "ksu_handle_stat" fs/stat.c | head -5 || true
