@@ -13,7 +13,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: cyberc3dr/android_kernel_samsung_universal7880
-          ref: rise-ksu-staging
+          ref: rise
           fetch-depth: 1
 
       - name: Checkout zipper (AnyKernel3)
