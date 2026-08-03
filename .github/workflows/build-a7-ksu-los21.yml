@@ -87,7 +87,7 @@ jobs:
             || true
 
           ls drivers/kernelsu | head -15
-          echo "==> Done LOS21 (filiprrs lineage-20 tree)"
+          echo "==> Done LOS21 (filiprrs lineage-20)"
 
       - name: Build Android Kernel for a7y17lte
         uses: cyberc3dr/android-kernel-actions@a57y17lte
