@@ -65,18 +65,15 @@ jobs:
 
           if ! grep -q 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig; then
             echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-            echo "Added source to drivers/Kconfig"
           fi
           if ! grep -q 'kernelsu/' drivers/Makefile; then
             echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
-            echo "Added obj to drivers/Makefile"
           fi
 
           sed -i '/CONFIG_KSU/d' "$DEFCONFIG" || true
           sed -i '/CONFIG_KSU_TAMPER_SYSCALL_TABLE/d' "$DEFCONFIG" || true
           echo 'CONFIG_KSU=y' >> "$DEFCONFIG"
           echo 'CONFIG_KSU_TAMPER_SYSCALL_TABLE=y' >> "$DEFCONFIG"
-          echo "=== CONFIG_KSU ==="
           grep CONFIG_KSU "$DEFCONFIG" || true
 
           find drivers/kernelsu -type f \( -name 'Makefile' -o -name 'Kbuild' -o -name '*.mk' \) | while read -r f; do
@@ -106,9 +103,65 @@ jobs:
             -e 's/copy_to_iter(KERNEL_SU_RC/copy_to_iter((void *)KERNEL_SU_RC/g' \
             || true
 
-          echo "==> drivers/kernelsu:"
           ls drivers/kernelsu | head -15
-          echo "==> Done"
+          echo "==> KernelSU setup done"
+
+      - name: Fix missing a7 DTS (common.dtsi)
+        run: |
+          set -e
+          DTS=arch/arm64/boot/dts
+          echo "=== DTS a7 sebelum fix ==="
+          ls -la "$DTS" | grep -i a7 || true
+
+          BASE="https://raw.githubusercontent.com/LineageOS/android_kernel_samsung_universal7880/lineage-18.1/arch/arm64/boot/dts"
+
+          if [ ! -f "$DTS/exynos7880-a7y17lte_common.dtsi" ]; then
+            echo "==> common.dtsi hilang → download dari LineageOS lineage-18.1"
+          else
+            echo "==> common.dtsi sudah ada, tetap lengkapi file terkait jika kurang"
+          fi
+
+          for f in \
+            exynos7880-a7y17lte_common.dtsi \
+            exynos7880-a7y17lte_eur_open_00.dts \
+            exynos7880-a7y17lte_eur_open_01.dts \
+            exynos7880-a7y17lte_eur_open_02.dts \
+            exynos7880-a7y17lte_eur_open_03.dts \
+            exynos7880-a7y17lte_eur_open_05.dts \
+            exynos7880-a7y17lte_eur_open_07.dts \
+            exynos7880-a7y17lte_eur_open_08.dts \
+            exynos7880-a7y17lte_eur_open_09.dts \
+            exynos7880-a7y17lte_eur_open_10.dts
+          do
+            if [ ! -f "$DTS/$f" ]; then
+              if curl -fsSL "$BASE/$f" -o "$DTS/$f"; then
+                echo "OK  $f"
+              else
+                echo "SKIP $f (404/not found)"
+                rm -f "$DTS/$f"
+              fi
+            else
+              echo "HAVE $f"
+            fi
+          done
+
+          # Coba branch lain kalau common masih kosong
+          if [ ! -f "$DTS/exynos7880-a7y17lte_common.dtsi" ]; then
+            echo "==> Coba lineage-17.1 ..."
+            BASE17="https://raw.githubusercontent.com/LineageOS/android_kernel_samsung_universal7880/lineage-17.1/arch/arm64/boot/dts"
+            curl -fsSL "$BASE17/exynos7880-a7y17lte_common.dtsi" -o "$DTS/exynos7880-a7y17lte_common.dtsi" || true
+          fi
+
+          if [ ! -f "$DTS/exynos7880-a7y17lte_common.dtsi" ]; then
+            echo "ERROR: exynos7880-a7y17lte_common.dtsi tetap tidak ada"
+            ls -la "$DTS" | head -80
+            exit 1
+          fi
+
+          echo "=== VERIFY ==="
+          ls -la "$DTS/exynos7880-a7y17lte_common.dtsi"
+          head -8 "$DTS/exynos7880-a7y17lte_common.dtsi"
+          echo "DTS_A7_OK"
 
       - name: Build Android Kernel for a7y17lte
         uses: cyberc3dr/android-kernel-actions@a57y17lte
