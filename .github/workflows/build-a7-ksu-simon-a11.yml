@@ -22,6 +22,42 @@ jobs:
           repository: cyberc3dr/AnyKernel3
           path: zipper
 
+      - name: Fix missing a7 DTS (common.dtsi)
+        run: |
+          set -e
+          DTS="arch/arm64/boot/dts"
+          echo "=== DTS sebelum fix ==="
+          ls "$DTS" | grep -E 'a7y17lte|a5y17lte' || true
+
+          NEED=0
+          [ -f "$DTS/exynos7880-a7y17lte_common.dtsi" ] || NEED=1
+          [ -f "$DTS/exynos7880-a7y17lte_eur_open_00.dts" ] || NEED=1
+
+          if [ "$NEED" = "1" ]; then
+            echo "==> Ambil DTS A7 dari LineageOS lineage-18.1..."
+            rm -rf /tmp/losk
+            git clone --depth=1 --branch lineage-18.1 \
+              https://github.com/LineageOS/android_kernel_samsung_universal7880.git /tmp/losk \
+              || git clone --depth=1 \
+              https://github.com/cyberc3dr/android_kernel_samsung_universal7880.git /tmp/losk
+
+            SRC=$(find /tmp/losk -type d -path '*/arch/arm64/boot/dts' | head -1)
+            echo "SRC DTS=$SRC"
+            # salin semua file a7
+            find "$SRC" -maxdepth 1 -name '*a7y17lte*' -exec cp -v {} "$DTS/" \; || true
+            # jaga-jaga path nested
+            find /tmp/losk -name 'exynos7880-a7y17lte*' \( -name '*.dts' -o -name '*.dtsi' \) -exec cp -v {} "$DTS/" \; || true
+            rm -rf /tmp/losk
+          else
+            echo "DTS A7 sudah lengkap"
+          fi
+
+          echo "=== DTS sesudah fix ==="
+          ls -la "$DTS"/exynos7880-a7y17lte* || true
+          test -f "$DTS/exynos7880-a7y17lte_common.dtsi" \
+            || { echo "ERROR: common.dtsi masih hilang"; exit 1; }
+          echo "DTS_FIX_OK"
+
       - name: Add backslashxx KernelSU + defconfig
         run: |
           set -e
@@ -29,6 +65,7 @@ jobs:
           DEFCONFIG=""
           for c in \
             arch/arm64/configs/rise-a7y17lte_defconfig \
+            arch/arm64/configs/lineage-a7y17te_defconfig \
             arch/arm64/configs/lineage-a7y17lte_defconfig \
             arch/arm64/configs/a7y17lte_defconfig
           do
@@ -45,9 +82,7 @@ jobs:
           DEFCONFIG_NAME=$(basename "$DEFCONFIG")
           echo "DEFCONFIG_NAME=$DEFCONFIG_NAME" >> "$GITHUB_ENV"
 
-          echo "==> Clone backslashxx KernelSU..."
           git clone --depth=1 https://github.com/backslashxx/KernelSU.git ksu_temp
-
           if [ -d "ksu_temp/kernel" ]; then
             rm -rf drivers/kernelsu
             cp -r ksu_temp/kernel drivers/kernelsu
@@ -98,8 +133,8 @@ jobs:
             -e 's/copy_to_iter(KERNEL_SU_RC/copy_to_iter((void *)KERNEL_SU_RC/g' \
             || true
 
-          ls drivers/kernelsu | head -15
-          echo "==> Done Simon1511 Android 11 (rise)"
+          ls drivers/kernelsu | head -10
+          echo "==> Done Simon A11 + DTS fix"
 
       - name: Build Android Kernel for a7y17lte
         uses: cyberc3dr/android-kernel-actions@a57y17lte
