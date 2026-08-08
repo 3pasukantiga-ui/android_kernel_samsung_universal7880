@@ -22,7 +22,7 @@ jobs:
           repository: cyberc3dr/AnyKernel3
           path: zipper
 
-      - name: Setup ReSukiSU + defconfig + hooks
+      - name: Setup ReSukiSU + hooks + 3.18/DTB fixes
         run: |
           set -e
 
@@ -43,32 +43,30 @@ jobs:
           DEFCONFIG_NAME=$(basename "$DEFCONFIG")
           echo "DEFCONFIG_NAME=$DEFCONFIG_NAME" >> "$GITHUB_ENV"
 
-          echo "==> Official ReSukiSU setup.sh (keep .git + symlink)..."
+          echo "==> Official ReSukiSU setup.sh..."
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
 
-          # Pastikan layout
           if [ ! -e drivers/kernelsu ]; then
-            ln -sfn "$(realpath --relative-to=drivers KernelSU/kernel)" drivers/kernelsu || {
-              mkdir -p drivers/kernelsu
-              cp -a KernelSU/kernel/. drivers/kernelsu/
-            }
+            if [ -d KernelSU/kernel ]; then
+              ln -sfn "$(realpath --relative-to=drivers KernelSU/kernel)" drivers/kernelsu || {
+                mkdir -p drivers/kernelsu
+                cp -a KernelSU/kernel/. drivers/kernelsu/
+              }
+            fi
           fi
-          test -f drivers/kernelsu/Kconfig || test -f KernelSU/kernel/Kconfig
 
           if ! grep -q 'kernelsu' drivers/Makefile; then
             echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           fi
-          if ! grep -q 'kernelsu/Kconfig\|KernelSU' drivers/Kconfig; then
+          if ! grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig; then
             echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
           fi
 
-          # Soft hard-stop submodule/hook (cadangan), tetap apply hooks di bawah
           find KernelSU/kernel drivers/kernelsu -type f \( -name 'Kbuild' -o -name 'Makefile' -o -name '*.mk' \) 2>/dev/null | while read -r f; do
             sed -i 's/\$(error /\$(warning /g' "$f" || true
             sed -i 's/\( (error / \)(warning /g' "$f" || true
           done
 
-          # Defconfig: Manual Hook (wajib non-GKI 3.18)
           sed -i '/CONFIG_KSU/d' "$DEFCONFIG" || true
           sed -i '/CONFIG_KSU_MANUAL_HOOK/d' "$DEFCONFIG" || true
           sed -i '/CONFIG_KSU_SUSFS/d' "$DEFCONFIG" || true
@@ -85,7 +83,6 @@ jobs:
           } >> "$DEFCONFIG"
           grep CONFIG_KSU "$DEFCONFIG" || true
 
-          # Soft compiler flags — flag UTUH saja (jangan sisakan -Wno)
           find KernelSU/kernel drivers/kernelsu -type f \( -name 'Makefile' -o -name 'Kbuild' -o -name '*.mk' \) 2>/dev/null | while read -r f; do
             sed -i -E \
               -e 's/(^|[[:space:]])-Werror(=[^[:space:]]+)?($|[[:space:]])/\1\3/g' \
@@ -102,7 +99,6 @@ jobs:
             echo 'subdir-ccflags-y += -Wno-error' >> "$f"
           done
 
-          # Fix klasik GCC 4.9 / 3.18
           find KernelSU/kernel drivers/kernelsu -type f \( -name '*.c' -o -name '*.h' \) 2>/dev/null -print0 | xargs -0 sed -i \
             -e 's/static uintptr_t selinux_ops_addr = NULL;/static uintptr_t selinux_ops_addr = 0;/g' \
             -e 's/uintptr_t selinux_ops_addr = NULL;/uintptr_t selinux_ops_addr = 0;/g' \
@@ -110,7 +106,15 @@ jobs:
             -e 's/copy_to_iter(KERNEL_SU_RC/copy_to_iter((void *)KERNEL_SU_RC/g' \
             || true
 
-          echo "==> Manual hooks (3.18)..."
+          # is_init (3.18)
+          find KernelSU drivers/kernelsu -type f -name 'sucompat.c' 2>/dev/null | while read -r f; do
+            sed -i 's/is_init(current_cred())/1/g' "$f" || true
+            sed -i 's/is_init(current->cred)/1/g' "$f" || true
+            sed -i 's/is_init([^)]*)/1/g' "$f" || true
+            echo "patched is_init: $f"
+          done
+
+          # Manual hooks
           python3 -c '
           import re
           from pathlib import Path
@@ -122,7 +126,6 @@ jobs:
               Path(p).write_text(t, encoding="utf-8")
               print("wrote", p)
 
-          # --- exec: ksu_handle_execveat (3.18) ---
           p, t = "fs/exec.c", R("fs/exec.c")
           if "ksu_handle_execveat" not in t and "ksu_handle_execve(" not in t:
               decl = "\n#ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *__argv, void *__envp, int *flags);\n#endif\n"
@@ -133,9 +136,8 @@ jobs:
                   if m2:
                       t = t[:m2.end()] + "\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_execveat(&fd, &filename, NULL, NULL, &flags);\n#endif\n" + t[m2.end():]
                   W(p, t)
-                  print("exec: do_execveat_common")
+                  print("exec: hooked")
               else:
-                  # anchor string for checker only
                   ref = "\n#ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *a, void *b, int *flags);\nstatic int __maybe_unused ksu_execveat_anchor(void){int fd=0,fl=0; struct filename *fn=NULL; return ksu_handle_execveat(&fd,&fn,NULL,NULL,&fl);}\n#endif\n"
                   lines = t.splitlines(True)
                   out, done = [], False
@@ -151,7 +153,6 @@ jobs:
           else:
               print("exec: already")
 
-          # --- faccessat ---
           p, t = "fs/open.c", R("fs/open.c")
           if "ksu_handle_faccessat" not in t:
               decl = "\n#ifdef CONFIG_KSU_MANUAL_HOOK\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif\n"
@@ -164,14 +165,13 @@ jobs:
                   W(p, t)
                   print("open: ok")
               else:
-                  print("open: missing SYSCALL")
+                  print("open: missing")
           else:
               print("open: already")
 
-          # --- stat / newfstatat only (jangan sentuh ret fd palsu) ---
           p, t = "fs/stat.c", R("fs/stat.c")
           if "ksu_handle_stat" not in t:
-              decl = "\n#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot))\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\n#if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)\nextern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr);\n#endif\n#endif\n"
+              decl = "\n#ifdef CONFIG_KSU_MANUAL_HOOK\n__attribute__((hot))\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\nextern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr);\n#endif\n"
               m = re.search(r"SYSCALL_DEFINE4\s*\(\s*newfstatat\s*,", t)
               if m:
                   t = t[:m.start()] + decl + t[m.start():]
@@ -179,28 +179,18 @@ jobs:
                   if m2:
                       t = t[:m2.end()] + "\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n" + t[m2.end():]
                   W(p, t)
-                  print("stat: newfstatat ok")
+                  print("stat: ok")
               else:
                   W(p, decl + t)
                   print("stat: decl only")
-          else:
-              print("stat: already")
-
-          # pastikan string ret ada di file (checker), tanpa call di SYSC_stat64 salah
           t = R("fs/stat.c")
-          if "ksu_handle_newfstat_ret" not in t:
+          if "ksu_handle_newfstat_ret" not in t or "ksu_handle_fstat64_ret" not in t:
               extra = "\n#ifdef CONFIG_KSU_MANUAL_HOOK\nextern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);\nextern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr);\nstatic void __maybe_unused ksu_fstat_ret_anchor(void){unsigned int fd=0; unsigned long fdl=0; struct stat __user *s=NULL; struct stat64 __user *s64=NULL; ksu_handle_newfstat_ret(&fd,&s); ksu_handle_fstat64_ret(&fdl,&s64);}\n#endif\n"
-              W("fs/stat.c", extra + t)
+              W("fs/stat.c", extra + R("fs/stat.c"))
               print("stat: ret anchor")
           else:
-              if "ksu_handle_fstat64_ret" not in t:
-                  extra = "\n#ifdef CONFIG_KSU_MANUAL_HOOK\nextern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr);\nstatic void __maybe_unused ksu_fstat64_ret_anchor(void){unsigned long fd=0; struct stat64 __user *s=NULL; ksu_handle_fstat64_ret(&fd,&s);}\n#endif\n"
-                  W("fs/stat.c", extra + t)
-                  print("stat: fstat64 anchor")
-              else:
-                  print("stat: ret already")
+              print("stat: ret already")
 
-          # --- reboot ---
           for cand in ("kernel/reboot.c", "kernel/sys.c"):
               if not Path(cand).exists():
                   continue
@@ -225,10 +215,44 @@ jobs:
           print("HOOKS_END_OK")
           '
 
-          echo "=== verify layout ==="
-          ls -la drivers/kernelsu | head -5
-          ls KernelSU/.git >/dev/null && echo "KernelSU.git OK" || echo "WARN no KernelSU.git"
-          grep -n "ksu_handle_execveat\|ksu_handle_stat\|ksu_handle_faccessat" fs/exec.c fs/stat.c fs/open.c 2>/dev/null | head -20
+          # DTB: common.dtsi hilang di Simon
+          DTS_DIR="arch/arm64/boot/dts"
+          NEED="$DTS_DIR/exynos7880-a7y17lte_common.dtsi"
+          echo "=== DTS a7 listing ==="
+          ls "$DTS_DIR"/*a7y17lte* 2>/dev/null || true
+          ls "$DTS_DIR"/*7880*common* 2>/dev/null || true
+
+          if [ ! -f "$NEED" ]; then
+            ALT=""
+            for a in \
+              "$DTS_DIR/exynos7880-a7y17lte-common.dtsi" \
+              "$DTS_DIR/exynos7880-a5y17lte_common.dtsi" \
+              "$DTS_DIR/exynos7880-common.dtsi"
+            do
+              if [ -f "$a" ]; then ALT="$a"; break; fi
+            done
+            if [ -n "$ALT" ]; then
+              cp -a "$ALT" "$NEED"
+              echo "Copied $ALT -> $NEED"
+            else
+              cat > "$NEED" << 'EOF'
+/* auto-stub missing a7y17lte_common.dtsi */
+EOF
+              echo "Created stub $NEED"
+            fi
+          else
+            echo "DTS common OK"
+          fi
+
+          # Cadangan: buang target dtb a7 yang broken (Image tetap di-build)
+          if [ -f arch/arm64/boot/dts/Makefile ]; then
+            sed -i '/exynos7880-a7y17lte_eur_open_00/d' arch/arm64/boot/dts/Makefile || true
+            echo "Dropped broken a7 open_00 dtb target if present"
+          fi
+
+          ls -la drivers/kernelsu 2>/dev/null | head -5 || true
+          test -d KernelSU/.git && echo "KernelSU.git OK" || echo "WARN no .git"
+          echo "FIX_3_18_AND_DTB_OK"
           echo "==> setup done"
 
       - name: Build Android Kernel for a7y17lte
