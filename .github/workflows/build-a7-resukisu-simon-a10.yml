@@ -1,19 +1,19 @@
-name: Build a7y17lte ReSukiSU (Simon A10)
+name: Build a7y17lte ReSukiSU (LOS 18.1)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    name: a7y17lte Simon A10 + ReSukiSU
+    name: a7y17lte LOS18.1 + ReSukiSU
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Simon1511 rise
+      - name: Checkout kernel LineageOS lineage-18.1
         uses: actions/checkout@v7
         with:
-          repository: Simon1511/android_kernel_samsung_universal7880
-          ref: rise
+          repository: LineageOS/android_kernel_samsung_universal7880
+          ref: lineage-18.1
           fetch-depth: 1
 
       - name: Checkout zipper (AnyKernel3)
@@ -22,21 +22,14 @@ jobs:
           repository: cyberc3dr/AnyKernel3
           path: zipper
 
-      - name: Setup ReSukiSU + hooks + skip DTB
+      - name: Setup ReSukiSU + hooks + module configs
         run: |
           set -e
 
-          DEFCONFIG=""
-          for c in \
-            arch/arm64/configs/rise-a7y17lte_defconfig \
-            arch/arm64/configs/lineage-a7y17lte_defconfig \
-            arch/arm64/configs/a7y17lte_defconfig
-          do
-            if [ -f "$c" ]; then DEFCONFIG="$c"; break; fi
-          done
-          if [ -z "$DEFCONFIG" ]; then
-            echo "ERROR: defconfig a7 tidak ketemu"
-            ls arch/arm64/configs/ | head -60
+          DEFCONFIG="arch/arm64/configs/lineage-a7y17lte_defconfig"
+          if [ ! -f "$DEFCONFIG" ]; then
+            echo "ERROR: $DEFCONFIG tidak ada"
+            ls arch/arm64/configs/ | head -80
             exit 1
           fi
           echo "Using DEFCONFIG=$DEFCONFIG"
@@ -62,42 +55,46 @@ jobs:
             echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
           fi
 
+          # Soft hard-error checker (submodule / missing optional)
           find KernelSU/kernel drivers/kernelsu -type f \( -name 'Kbuild' -o -name 'Makefile' -o -name '*.mk' \) 2>/dev/null | while read -r f; do
             sed -i 's/\$(error /\$(warning /g' "$f" || true
             sed -i 's/\( (error / \)(warning /g' "$f" || true
           done
 
+          # Defconfig: KSU + MODULE path (penting untuk install module)
           sed -i '/CONFIG_KSU/d' "$DEFCONFIG" || true
           sed -i '/CONFIG_KSU_MANUAL_HOOK/d' "$DEFCONFIG" || true
           sed -i '/CONFIG_KSU_SUSFS/d' "$DEFCONFIG" || true
           sed -i '/CONFIG_KPROBES/d' "$DEFCONFIG" || true
           sed -i '/CONFIG_KPROBE_EVENTS/d' "$DEFCONFIG" || true
           sed -i '/^CONFIG_MODULES=/d' "$DEFCONFIG" || true
+          sed -i '/CONFIG_OVERLAY_FS/d' "$DEFCONFIG" || true
+          sed -i '/CONFIG_KALLSYMS/d' "$DEFCONFIG" || true
+          sed -i '/CONFIG_KALLSYMS_ALL/d' "$DEFCONFIG" || true
 
-          # Matikan append DTB di defconfig (penyebab open_00.dtb)
-          sed -i '/BUILD_ARM64_APPENDED_DTB/d' "$DEFCONFIG" || true
-          sed -i '/CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE_NAMES/d' "$DEFCONFIG" || true
           {
             echo 'CONFIG_MODULES=y'
+            echo 'CONFIG_OVERLAY_FS=y'
             echo 'CONFIG_KPROBES=y'
             echo 'CONFIG_KPROBE_EVENTS=y'
+            echo 'CONFIG_KALLSYMS=y'
+            echo 'CONFIG_KALLSYMS_ALL=y'
             echo 'CONFIG_KSU=y'
             echo 'CONFIG_KSU_MANUAL_HOOK=y'
-            echo '# CONFIG_BUILD_ARM64_APPENDED_DTB_IMAGE is not set'
           } >> "$DEFCONFIG"
-          grep -E 'CONFIG_KSU|APPENDED_DTB' "$DEFCONFIG" || true
+          echo "=== KSU / module related ==="
+          grep -E 'CONFIG_KSU|CONFIG_MODULES|CONFIG_OVERLAY|CONFIG_KALLSYMS|CONFIG_KPROBE' "$DEFCONFIG" || true
 
+          # Soft Werror (GCC lama LOS 3.18)
           find KernelSU/kernel drivers/kernelsu -type f \( -name 'Makefile' -o -name 'Kbuild' -o -name '*.mk' \) 2>/dev/null | while read -r f; do
             sed -i -E \
               -e 's/(^|[[:space:]])-Werror(=[^[:space:]]+)?($|[[:space:]])/\1\3/g' \
-              -e 's/(^|[[:space:]])-Wno-error(=[^[:space:]]+)?($|[[:space:]])/\1\3/g' \
               -e 's/(^|[[:space:]])-Wno-discarded-qualifiers($|[[:space:]])/\1\2/g' \
               -e 's/(^|[[:space:]])-Wno-incompatible-pointer-types-discards-qualifiers($|[[:space:]])/\1\2/g' \
               -e 's/(^|[[:space:]])-Wno-macro-redefined($|[[:space:]])/\1\2/g' \
               -e 's/(^|[[:space:]])-Wno-int-conversion($|[[:space:]])/\1\2/g' \
               -e 's/(^|[[:space:]])-Wno-logical-not-parentheses($|[[:space:]])/\1\2/g' \
               -e 's/(^|[[:space:]])-Wno-implicit-function-declaration($|[[:space:]])/\1\2/g' \
-              -e 's/(^|[[:space:]])-Wno($|[[:space:]])/\1\2/g' \
               "$f" || true
             echo 'ccflags-y += -Wno-error -Wno-implicit-function-declaration' >> "$f"
             echo 'subdir-ccflags-y += -Wno-error -Wno-implicit-function-declaration' >> "$f"
@@ -114,6 +111,7 @@ jobs:
             -e 's/copy_to_iter(KERNEL_SU_RC/copy_to_iter((void *)KERNEL_SU_RC/g' \
             || true
 
+          # 3.18: is_init
           find KernelSU drivers/kernelsu -type f -name 'sucompat.c' 2>/dev/null | while read -r f; do
             sed -i 's/is_init(current_cred())/1/g' "$f" || true
             sed -i 's/is_init(current->cred)/1/g' "$f" || true
@@ -121,6 +119,7 @@ jobs:
             echo "patched is_init: $f"
           done
 
+          # stop_machine (selinux_hide) — jangan pecah link; soft call
           find KernelSU drivers/kernelsu -type f -name 'selinux_hide.c' 2>/dev/null | while read -r f; do
             if ! grep -q 'linux/stop_machine.h' "$f"; then
               sed -i '1a #include <linux/stop_machine.h>' "$f" || true
@@ -129,6 +128,7 @@ jobs:
             echo "patched stop_machine: $f"
           done
 
+          # Manual hooks (checker ReSuki)
           python3 -c '
           import re
           from pathlib import Path
@@ -229,48 +229,24 @@ jobs:
           print("HOOKS_END_OK")
           '
 
-          # ===== SKIP DTB TOTAL (AnyKernel = Image only) =====
-          echo "==> Force skip dtb.img..."
-          find arch -name 'Makefile' -print0 | xargs -0 grep -l 'a7y17lte' 2>/dev/null | while read -r f; do
-            sed -i '/a7y17lte/d' "$f" || true
-            echo "stripped a7 from $f"
+          # SELinux: un-static symbols yang sering dibutuhkan ReSuki (kalau ada)
+          for f in security/selinux/selinuxfs.c security/selinux/ss/services.c security/selinux/avc.c; do
+            [ -f "$f" ] || continue
+            sed -i 's/static void security_dump_masked_av/void security_dump_masked_av/g' "$f" || true
+            sed -i 's/static void context_struct_compute_av/void context_struct_compute_av/g' "$f" || true
+            sed -i 's/static struct file_operations selinux_ops/struct file_operations selinux_ops/g' "$f" || true
+            echo "selinux soft export touch: $f"
           done
 
-          # Hapus referensi dtb.img dari arch/arm64/Makefile + buat target dummy
-          python3 -c '
-          from pathlib import Path
-          import re
-          p = Path("arch/arm64/Makefile")
-          if p.exists():
-              t = p.read_text(encoding="utf-8", errors="ignore")
-              t2 = re.sub(r"[ \t]*dtb\.img", "", t)
-              # pastikan ada rule dummy (override di akhir file)
-              t2 += "\n\n# CI: skip real DTB (missing dtsi on Simon tree)\n"
-              t2 += ".PHONY: dtb.img dtbs\n"
-              t2 += "dtb.img:\n"
-              t2 += "\t@echo \"[CI] skip dtb.img\"\n"
-              t2 += "\t@mkdir -p arch/arm64/boot\n"
-              t2 += "\t@touch arch/arm64/boot/dtb.img\n"
-              t2 += "dtbs:\n"
-              t2 += "\t@echo \"[CI] skip dtbs\"\n"
-              p.write_text(t2, encoding="utf-8")
-              print("arch/arm64/Makefile patched for skip DTB")
-          else:
-              print("no arch/arm64/Makefile")
-          '
-
-          # Juga di root Makefile bila ada
-          sed -i 's/[ \t]*dtb\.img//g' Makefile 2>/dev/null || true
-
-          ls -la drivers/kernelsu 2>/dev/null | head -5 || true
+          ls -la drivers/kernelsu 2>/dev/null | head -8 || true
           test -d KernelSU/.git && echo "KernelSU.git OK" || echo "WARN no .git"
-          echo "SKIP_DTB_OK"
+          echo "LOS18_RESUKI_SETUP_OK"
           echo "==> setup done"
 
       - name: Build Android Kernel for a7y17lte
         uses: cyberc3dr/android-kernel-actions@a57y17lte
         env:
-          NAME: a7y17lte-resukisu-simon-a10
+          NAME: a7y17lte-resukisu-los18
           KCFLAGS: -Wno-error -Wno-implicit-function-declaration
         with:
           arch: arm64
@@ -280,6 +256,6 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: a7y17lte-resukisu-simon-a10
+          name: a7y17lte-resukisu-los18
           path: zipper/*.zip
           if-no-files-found: error
