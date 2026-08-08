@@ -106,7 +106,6 @@ jobs:
             -e 's/copy_to_iter(KERNEL_SU_RC/copy_to_iter((void *)KERNEL_SU_RC/g' \
             || true
 
-          # is_init (3.18)
           find KernelSU drivers/kernelsu -type f -name 'sucompat.c' 2>/dev/null | while read -r f; do
             sed -i 's/is_init(current_cred())/1/g' "$f" || true
             sed -i 's/is_init(current->cred)/1/g' "$f" || true
@@ -114,7 +113,6 @@ jobs:
             echo "patched is_init: $f"
           done
 
-          # Manual hooks
           python3 -c '
           import re
           from pathlib import Path
@@ -215,7 +213,6 @@ jobs:
           print("HOOKS_END_OK")
           '
 
-          # DTB: common.dtsi hilang di Simon
           DTS_DIR="arch/arm64/boot/dts"
           NEED="$DTS_DIR/exynos7880-a7y17lte_common.dtsi"
           echo "=== DTS a7 listing ==="
@@ -235,16 +232,14 @@ jobs:
               cp -a "$ALT" "$NEED"
               echo "Copied $ALT -> $NEED"
             else
-              cat > "$NEED" << 'EOF'
-/* auto-stub missing a7y17lte_common.dtsi */
-EOF
+              # TANPA heredoc (aman di YAML)
+              printf '%s\n' '/* auto-stub missing a7y17lte_common.dtsi */' > "$NEED"
               echo "Created stub $NEED"
             fi
           else
             echo "DTS common OK"
           fi
 
-          # Cadangan: buang target dtb a7 yang broken (Image tetap di-build)
           if [ -f arch/arm64/boot/dts/Makefile ]; then
             sed -i '/exynos7880-a7y17lte_eur_open_00/d' arch/arm64/boot/dts/Makefile || true
             echo "Dropped broken a7 open_00 dtb target if present"
