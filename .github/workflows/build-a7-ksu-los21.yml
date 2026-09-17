@@ -22,7 +22,7 @@ jobs:
           repository: cyberc3dr/AnyKernel3
           path: zipper
 
-      - name: Add backslashxx KernelSU + defconfig
+      - name: Add backslashxx KernelSU + defconfig + fix ecryptfs
         run: |
           set -e
           DEFCONFIG="arch/arm64/configs/lineage-a7y17lte_defconfig"
@@ -86,6 +86,32 @@ jobs:
             -e 's/copy_to_iter(KERNEL_SU_RC/copy_to_iter((void *)KERNEL_SU_RC/g' \
             || true
 
+          # Fix error: ecryptfs_dek.c misleading-indentation (-Werror)
+          if [ -f fs/ecryptfs/Makefile ]; then
+            if ! grep -q 'CFLAGS_ecryptfs_dek.o' fs/ecryptfs/Makefile; then
+              echo 'CFLAGS_ecryptfs_dek.o += -Wno-error=misleading-indentation -Wno-error' >> fs/ecryptfs/Makefile
+            fi
+          fi
+          if [ -f fs/ecryptfs/ecryptfs_dek.c ]; then
+            python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path("fs/ecryptfs/ecryptfs_dek.c")
+          t = p.read_text(encoding="utf-8", errors="ignore")
+          t2 = re.sub(
+              r'(if\s*\(\s*list_empty\s*\(\s*&crypt_stat->keysig_list\s*\)\s*\))\s*\n(\s+)([^\n{]+)\n',
+              r'\1 {\n\2\3\n\2}\n',
+              t,
+              count=5,
+          )
+          if t2 != t:
+              p.write_text(t2, encoding="utf-8")
+              print("ecryptfs_dek braces fixed")
+          else:
+              print("ecryptfs_dek pattern unchanged (CFLAGS soft enough)")
+          PY
+          fi
+
           ls drivers/kernelsu | head -15
           echo "==> Done LOS21 (filiprrs lineage-20)"
 
@@ -93,6 +119,7 @@ jobs:
         uses: cyberc3dr/android-kernel-actions@a57y17lte
         env:
           NAME: a7y17lte-ksu-los21
+          KCFLAGS: -Wno-error=misleading-indentation -Wno-error
         with:
           arch: arm64
           defconfig: lineage-a7y17lte_defconfig
