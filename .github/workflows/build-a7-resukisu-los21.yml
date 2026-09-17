@@ -9,10 +9,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout kernel LineageOS lineage-21
+      - name: Checkout kernel cyberc3dr lineage-21
         uses: actions/checkout@v7
         with:
-          repository: LineageOS/android_kernel_samsung_universal7880
+          repository: cyberc3dr/kernel_samsung_universal7880
           ref: lineage-21
           fetch-depth: 1
 
@@ -43,7 +43,7 @@ jobs:
           DEFCONFIG_NAME=$(basename "$DEFCONFIG")
           echo "DEFCONFIG_NAME=$DEFCONFIG_NAME" >> "$GITHUB_ENV"
 
-          # Bersihkan KSU lama kalau ada (jangan campur driver)
+          # Bersihkan KSU lama (branch lineage-21 sering sudah punya driver)
           rm -rf drivers/kernelsu KernelSU
 
           echo "==> Official ReSukiSU setup.sh..."
